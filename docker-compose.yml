@@ -1,0 +1,139 @@
+name: disaster-pipeline
+
+x-app: &app
+  build: { context: ., dockerfile: docker/app.Dockerfile }
+  image: disaster-app
+  env_file: .env
+  volumes: ["./app:/app"]
+  restart: unless-stopped
+  depends_on:
+    postgres: { condition: service_healthy }
+    kafka-init: { condition: service_completed_successfully }
+    minio: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16
+    env_file: .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.1.2
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    volumes: ["kafkadata:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 10s
+      retries: 20
+
+  # One-shot container that creates the five raw topics
+  kafka-init:
+    image: apache/kafka:4.1.2
+    depends_on: { kafka: { condition: service_healthy } }
+    entrypoint: ["sh", "-c"]
+    command:
+      - for t in raw.usgs raw.gdacs raw.firms raw.eonet raw.openmeteo; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1;
+        done
+
+  minio:
+    image: bitnamilegacy/minio:2025.7.23   # official minio/minio images are no longer published
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKETS: raw-archive
+    volumes: ["miniodata:/bitnami/minio/data"]
+    ports: ["9001:9001"]   # web console
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      retries: 20
+
+  spark-master:
+    image: apache/spark:3.5.8-scala2.12-java17-python3-ubuntu
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master
+    ports: ["8081:8080"]   # Spark master UI
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/spark-master/7077'"]
+      interval: 10s
+      retries: 20
+
+  spark-worker:
+    image: apache/spark:3.5.8-scala2.12-java17-python3-ubuntu
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 2g
+    depends_on: { spark-master: { condition: service_healthy } }
+
+  airflow:
+    build: { context: ., dockerfile: docker/airflow.Dockerfile }
+    image: disaster-airflow
+    command: standalone
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"   # local project: no login screen
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET}
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: 30
+      PYTHONPATH: /opt/airflow/app
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./app:/opt/airflow/app
+      - ./spark:/opt/airflow/spark
+      - airflowlogs:/opt/airflow/logs
+    ports: ["8080:8080"]
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      minio: { condition: service_healthy }
+      spark-master: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      retries: 40
+
+  producer-usgs:
+    <<: *app
+    command: python ingest.py usgs 60
+
+  producer-gdacs:
+    <<: *app
+    command: python ingest.py gdacs 600
+
+  consumer:
+    <<: *app
+    command: python consumer.py
+
+  api:
+    <<: *app
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+
+volumes:
+  pgdata:
+  kafkadata:
+  miniodata:
+  airflowlogs:
