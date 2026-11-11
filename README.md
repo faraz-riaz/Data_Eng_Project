@@ -166,6 +166,6 @@ Manual runs: `docker compose exec airflow airflow dags trigger <dag>` with `inge
 | `docker-compose.yml`, `docker/` | Infrastructure |
 
 Notes:
-- MinIO runs from `bitnamilegacy/minio`, because official MinIO community images are no longer published.
+- MinIO runs from `pgsty/minio` (a community MinIO fork that still includes the web console), because official MinIO community images are no longer published.
 - Airflow starts Spark jobs with `spark-submit` against the standalone Spark cluster.
 - Test results: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and [`API_PREFLIGHT.md`](API_PREFLIGHT.md).

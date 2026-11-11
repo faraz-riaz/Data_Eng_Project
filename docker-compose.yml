@@ -57,12 +57,13 @@ services:
         done
 
   minio:
-    image: bitnamilegacy/minio:2025.7.23   # official minio/minio images are no longer published
+    # Community MinIO fork that still ships the web console (official images are no longer published)
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_DEFAULT_BUCKETS: raw-archive
-    volumes: ["miniodata:/bitnami/minio/data"]
+    volumes: ["miniodata:/data"]
     ports: ["9001:9001"]   # web console
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
