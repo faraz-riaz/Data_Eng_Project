@@ -1,4 +1,10 @@
 .env
+.env.*
+!.env.example
+
+.DS_Store
+/.vscode/settings.json
+
 __pycache__/
 *.pyc
 logs/

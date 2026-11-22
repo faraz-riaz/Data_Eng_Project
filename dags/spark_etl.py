@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG
 
+# Use the installed Java on PATH so the driver works on both ARM and x86 images.
 SPARK_SUBMIT = (
-    "spark-submit --master spark://spark-master:7077 --jars /opt/jars/postgresql.jar "
+    "env -u JAVA_HOME spark-submit --master spark://spark-master:7077 --jars /opt/jars/postgresql.jar "
     "--conf spark.driver.host=airflow --conf spark.driver.bindAddress=0.0.0.0 "
     "--conf spark.cores.max=1 --conf spark.executor.memory=1g "
     "--conf spark.driver.extraJavaOptions=-Duser.timezone=UTC "

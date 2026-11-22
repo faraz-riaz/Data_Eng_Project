@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f1f5fa">
+  <meta name="description" content="Explore natural disaster reports, GDACS alerts and NASA FIRMS hotspots from the natural disaster data pipeline.">
+  <title>World in Motion: Global Hazard Activity</title>
+  <link rel="stylesheet" href="/assets/leaflet.css">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/assets/leaflet.js" defer></script>
+  <script src="/assets/leaflet-heat.js" defer></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#overview">Skip to dashboard</a>
+  <main id="overview" class="workspace" data-view="map">
+    <header class="page-header">
+      <h1>World in Motion: Global Hazard Activity</h1>
+      <div class="header-actions">
+        <div class="connection-info" role="status">
+          <span id="connection" class="connection" data-state="loading"><i></i>Connecting</span>
+          <time id="last-refresh">Waiting for first update</time>
+        </div>
+        <button type="button" class="icon-button refresh" id="refresh" title="Refresh data" aria-label="Refresh data">
+          <span data-icon="refresh"></span>
+        </button>
+      </div>
+    </header>
+
+    <section class="filter-bar" aria-label="Dashboard filters">
+      <label class="filter">
+        <span class="filter-icon" data-icon="calendar"></span>
+        <span>Time period</span>
+        <select id="period" aria-label="Time period">
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="custom">Custom range</option>
+        </select>
+      </label>
+      <label class="filter">
+        <span class="filter-icon" data-icon="layers"></span>
+        <span>Hazard</span>
+        <select id="hazard" aria-label="Hazard">
+          <option value="all">All hazards</option>
+          <option value="earthquake">Earthquake</option>
+          <option value="flood">Flood</option>
+          <option value="storm">Storm / cyclone</option>
+          <option value="wildfire">Wildfire</option>
+          <option value="volcano">Volcanic activity</option>
+          <option value="other">Other hazards</option>
+        </select>
+      </label>
+      <label class="filter">
+        <span class="filter-icon" data-icon="globe"></span>
+        <span>Region</span>
+        <select id="region" aria-label="Region">
+          <option value="world">All regions</option>
+          <option value="africa">Africa</option>
+          <option value="asia">Asia</option>
+          <option value="europe">Europe</option>
+          <option value="north-america">North America</option>
+          <option value="south-america">South America</option>
+          <option value="oceania">Oceania</option>
+        </select>
+      </label>
+      <label class="filter">
+        <span class="filter-icon" data-icon="alert"></span>
+        <span>International aid</span>
+        <select id="aid-level" aria-label="International aid">
+          <option value="">All aid levels</option>
+          <option value="green">Green · Unlikely</option>
+          <option value="orange">Orange · Possible</option>
+          <option value="red">Red · Likely</option>
+        </select>
+      </label>
+      <div class="filter-actions">
+        <button type="button" class="text-button" id="edit-dates" hidden>Edit dates</button>
+        <button type="button" class="text-button" id="reset" hidden>Reset filters</button>
+      </div>
+    </section>
+
+    <div id="status-banner" class="status-banner" hidden role="status">
+      <span data-icon="info"></span><span id="status-message"></span>
+      <button type="button" class="text-button" id="retry">Try again</button>
+    </div>
+
+    <section class="metrics" aria-label="Summary metrics">
+      <article class="metric metric-events">
+        <span class="metric-icon" data-icon="activity"></span>
+        <h2>Total Events</h2>
+        <div class="metric-value">
+          <strong id="total-events">—</strong>
+          <canvas class="sparkline" data-series="events" aria-hidden="true"></canvas>
+        </div>
+        <p id="event-comparison">Event records in range</p>
+      </article>
+      <article class="metric metric-alerts">
+        <span class="metric-icon" data-icon="alert"></span>
+        <h2>Active Alerts</h2>
+        <div class="metric-value">
+          <strong id="alert-count">—</strong>
+          <canvas class="sparkline" data-series="alerts" aria-hidden="true"></canvas>
+        </div>
+        <p id="alert-comparison" title="GDACS dates estimate earlier daily counts. The comparison uses the active count at the end of the preceding period.">Current GDACS alerts</p>
+      </article>
+      <article class="metric metric-regions">
+        <span class="metric-icon" data-icon="pin"></span>
+        <h2>Reported Regions</h2>
+        <div class="metric-value">
+          <strong id="region-count">—</strong>
+          <canvas class="sparkline" data-series="regions" aria-hidden="true"></canvas>
+        </div>
+        <p id="region-comparison">Distinct source locations</p>
+      </article>
+      <article class="metric metric-hazards">
+        <span class="metric-icon" data-icon="layers"></span>
+        <h2>Hazard Types</h2>
+        <div class="metric-value">
+          <strong id="hazard-count">—</strong>
+          <canvas class="sparkline" data-series="hazards" aria-hidden="true"></canvas>
+        </div>
+        <p id="hazard-comparison">Types reported in range</p>
+      </article>
+    </section>
+
+    <nav class="view-switch" aria-label="Dashboard views">
+      <button type="button" data-view-target="map" aria-controls="global-map" aria-pressed="true">Map</button>
+      <button type="button" data-view-target="trend" aria-controls="event-trend" aria-pressed="false">Trend</button>
+      <button type="button" data-view-target="hazards" aria-controls="event-hazards" aria-pressed="false">Hazards</button>
+      <button type="button" data-view-target="alerts" aria-controls="active-alerts" aria-pressed="false">Alerts</button>
+      <button type="button" data-view-target="sources" aria-controls="data-sources" aria-pressed="false">Sources</button>
+    </nav>
+
+    <div class="dashboard-grid">
+      <section id="global-map" class="panel map-panel" aria-labelledby="map-title">
+        <div class="panel-header">
+          <h2 id="map-title">Global Activity Map</h2>
+          <p id="map-summary">Loading event locations…</p>
+        </div>
+        <div class="map-frame">
+          <div id="map" aria-label="Interactive global map. Use the controls to zoom and drag to pan."></div>
+          <div class="map-layer-switch" role="group" aria-label="Map layer">
+            <button type="button" data-layer="events" aria-pressed="true"><span data-icon="pin"></span>Events</button>
+            <button type="button" data-layer="hotspots" aria-pressed="false"><span data-icon="flame"></span>Hotspots</button>
+          </div>
+          <div class="map-controls" aria-label="Map controls">
+            <div class="zoom-controls">
+              <button type="button" id="zoom-in" aria-label="Zoom in" title="Zoom in"><span data-icon="plus"></span></button>
+              <button type="button" id="zoom-out" aria-label="Zoom out" title="Zoom out"><span data-icon="minus"></span></button>
+            </div>
+            <button type="button" id="reset-map" aria-label="Reset map view" title="Reset map view"><span data-icon="locate"></span></button>
+          </div>
+          <div id="map-legend" class="map-legend" aria-label="Map legend"></div>
+          <div id="map-message" class="map-message" hidden role="status"></div>
+          <a class="map-credit" href="https://www.naturalearthdata.com/" target="_blank" rel="noopener noreferrer">Natural Earth</a>
+        </div>
+      </section>
+
+      <section id="active-alerts" class="panel alert-panel" aria-labelledby="alerts-title">
+        <div class="panel-header">
+          <h2 id="alerts-title">Active Alerts <span id="alert-total" class="count-tag" hidden></span></h2>
+          <button id="view-alerts" type="button" class="text-button" disabled>View all</button>
+        </div>
+        <div class="alert-legend" role="group" aria-labelledby="alert-legend-title">
+          <h3 id="alert-legend-title">International aid</h3>
+          <ul>
+            <li><span class="alert-legend-dot green" aria-hidden="true"></span><span class="sr-only">Green </span>Unlikely</li>
+            <li><span class="alert-legend-dot orange" aria-hidden="true"></span><span class="sr-only">Orange </span>Possible</li>
+            <li><span class="alert-legend-dot red" aria-hidden="true"></span><span class="sr-only">Red </span>Likely</li>
+          </ul>
+        </div>
+        <div id="alert-list" class="alert-list" aria-live="polite"></div>
+      </section>
+
+      <div class="chart-grid">
+        <section id="event-trend" class="panel chart-panel" aria-labelledby="trend-title">
+          <div class="panel-header">
+            <h2 id="trend-title">Event Trend</h2>
+            <p>Daily records · UTC</p>
+          </div>
+          <div class="trend-wrap">
+            <canvas id="trend-chart" aria-label="Daily event records. Use left and right arrows to explore dates." tabindex="0"></canvas>
+            <div id="trend-tooltip" class="chart-tooltip" hidden></div>
+            <div id="trend-status" class="chart-state" role="status"></div>
+            <output id="trend-selection" class="sr-only" aria-live="polite"></output>
+          </div>
+        </section>
+        <section id="event-hazards" class="panel chart-panel" aria-labelledby="hazards-title">
+          <div class="panel-header">
+            <h2 id="hazards-title">Events by Hazard</h2>
+          </div>
+          <div class="breakdown">
+            <div id="donut" class="donut">
+              <div class="donut-center"><strong id="donut-total">—</strong><span>Events</span></div>
+            </div>
+            <ul id="hazard-legend" class="hazard-legend" aria-label="Events by hazard"></ul>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <footer id="data-sources" class="panel source-bar" aria-labelledby="sources-title">
+      <div class="source-heading">
+        <h2 id="sources-title">Data Sources</h2>
+        <small>Last Updated</small>
+      </div>
+      <ul id="source-list" class="source-list" aria-label="Source freshness"></ul>
+    </footer>
+  </main>
+
+  <dialog id="date-range-dialog" class="modal" aria-labelledby="date-range-title">
+    <div class="modal-header">
+      <h2 id="date-range-title">Custom date range</h2>
+      <form method="dialog"><button class="icon-button" aria-label="Close date range"><span data-icon="close"></span></button></form>
+    </div>
+    <form class="custom-range modal-content" id="custom-range">
+      <label>From (UTC)<input type="date" id="custom-from" required></label>
+      <label>To (UTC)<input type="date" id="custom-to" required></label>
+      <button type="submit" class="primary-button">Apply dates</button>
+      <span id="date-error" role="alert"></span>
+    </form>
+  </dialog>
+
+  <dialog id="all-alerts" class="modal" aria-labelledby="all-alerts-title">
+    <div class="modal-header">
+      <div><h2 id="all-alerts-title">Active GDACS alerts</h2><p id="all-alerts-note"></p></div>
+      <form method="dialog"><button class="icon-button" aria-label="Close alerts"><span data-icon="close"></span></button></form>
+    </div>
+    <div id="all-alerts-list" class="alert-list modal-content"></div>
+  </dialog>
+
+  <dialog id="event-detail" class="modal" aria-labelledby="event-title">
+    <div class="modal-header">
+      <div><h2 id="event-title">Event details</h2><p id="event-subtitle"></p></div>
+      <form method="dialog"><button class="icon-button" aria-label="Close event details"><span data-icon="close"></span></button></form>
+    </div>
+    <div id="event-content" class="modal-content event-content" aria-live="polite"></div>
+  </dialog>
+</body>
+</html>

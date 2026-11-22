@@ -50,10 +50,16 @@ def health():
 
 @app.get("/api/v1/events")
 def events(source: str = None, disaster_type: str = None, status: str = None, start: datetime = FROM,
-           end: datetime = TO, bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET):
+           end: datetime = TO, bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET,
+           alert_level: str = None):
+    latest_level = """(SELECT h.alert_level FROM gdacs_alert_history h
+                       WHERE h.event_id = disaster_events.event_id
+                       ORDER BY h.observed_at DESC, h.episode_id DESC LIMIT 1)"""
     clause, params = where(("source = %s", source), ("disaster_type = %s", disaster_type), ("status = %s", status),
+                           (f"{latest_level} = %s", alert_level.lower() if alert_level else None),
                            ("started_at >= %s", start), ("started_at <= %s", end), bbox=bbox)
-    rows = query(f"SELECT * FROM disaster_events WHERE {clause} ORDER BY started_at DESC NULLS LAST LIMIT %s OFFSET %s",
+    rows = query(f"SELECT * FROM disaster_events WHERE {clause} "
+                 "ORDER BY started_at DESC NULLS LAST, event_id LIMIT %s OFFSET %s",
                  params + [limit, offset])
     return page(rows, limit, offset)
 
