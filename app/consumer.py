@@ -1,5 +1,4 @@
-"""Kafka -> PostgreSQL staging. Offsets are committed only after the database commit (at-least-once);
-replayed messages are ignored by the UNIQUE (source, record_id, content_hash) constraint."""
+"""Write Kafka records to PostgreSQL staging with at-least-once delivery."""
 import json
 
 from confluent_kafka import Consumer
@@ -29,7 +28,7 @@ while True:
             v = json.loads(m.value())
         except ValueError:
             v = {}
-        # validate the envelope: all required fields present and source matches the topic
+        # Require the message to identify the same source as its Kafka topic.
         if any(not v.get(k) for k in REQUIRED) or m.topic() != f"raw.{v['source']}":
             rejected += 1
             continue
@@ -39,5 +38,6 @@ while True:
         inserted = execute_values(cur, """INSERT INTO staging.source_records
             (source, record_id, content_hash, payload, fetched_at, run_id, kafka_partition, kafka_offset)
             VALUES %s ON CONFLICT (source, record_id, content_hash) DO NOTHING RETURNING id""", rows, page_size=1000, fetch=True)
-    consumer.commit(asynchronous=False)   # only after the rows are safely in PostgreSQL
+    # Commit the offset after PostgreSQL commits. The unique key handles any replay.
+    consumer.commit(asynchronous=False)
     print(f"batch: {len(messages)} messages, {len(inserted)} inserted, {rejected} rejected", flush=True)

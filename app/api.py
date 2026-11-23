@@ -10,6 +10,15 @@ app = FastAPI(title="Natural Disaster API", version="1.0")
 
 
 def query(sql, params=()):
+    """Run a read query against PostgreSQL.
+
+    Args:
+        sql: SQL statement with placeholders for values.
+        params: Values to bind to the placeholders.
+
+    Returns:
+        A list of rows keyed by column name.
+    """
     conn = db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -20,7 +29,20 @@ def query(sql, params=()):
 
 
 def where(*conditions, bbox=None, lat="latitude", lon="longitude"):
-    """Build a WHERE clause from (sql, value) pairs, skipping filters that were not given."""
+    """Build a SQL filter from supplied values and an optional bounding box.
+
+    Args:
+        *conditions: Pairs of SQL predicates and values. None values omit the predicate.
+        bbox: Comma-separated west, south, east, and north coordinates.
+        lat: Latitude column name, optionally qualified with a table alias.
+        lon: Longitude column name, optionally qualified with a table alias.
+
+    Returns:
+        A tuple of the SQL predicate and its bound values.
+
+    Raises:
+        HTTPException: If the bounding box cannot be parsed as four numbers.
+    """
     conds = [c for c in conditions if c[1] is not None]
     if bbox:
         try:
@@ -32,6 +54,16 @@ def where(*conditions, bbox=None, lat="latitude", lon="longitude"):
 
 
 def page(rows, limit, offset):
+    """Wrap one result page in the shared API response format.
+
+    Args:
+        rows: Rows returned for this page.
+        limit: Maximum number of rows requested.
+        offset: Number of rows skipped.
+
+    Returns:
+        A dictionary with the rows, their count, and pagination values.
+    """
     return {"count": len(rows), "limit": limit, "offset": offset, "data": rows}
 
 
@@ -45,6 +77,11 @@ OFFSET = Query(0, ge=0)
 
 @app.get("/api/v1/health")
 def health():
+    """Check that the API can query PostgreSQL.
+
+    Returns:
+        A dictionary with the health status and database time.
+    """
     return {"status": "ok", "database_time": query("SELECT now() AS t")[0]["t"]}
 
 
@@ -52,6 +89,23 @@ def health():
 def events(source: str = None, disaster_type: str = None, status: str = None, start: datetime = FROM,
            end: datetime = TO, bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET,
            alert_level: str = None):
+    """List disaster events matching the supplied filters.
+
+    Args:
+        source: Source feed to include.
+        disaster_type: Standardized hazard type.
+        status: Source event status.
+        start: Inclusive lower bound for the event start time.
+        end: Inclusive upper bound for the event start time.
+        bbox: Geographic bounds in west, south, east, north order.
+        limit: Maximum number of events to return.
+        offset: Number of matching events to skip.
+        alert_level: Most recent stored GDACS alert level to match.
+
+    Returns:
+        A page of events ordered by descending start time.
+    """
+    # Alert history supplies the level for both open and closed GDACS events.
     latest_level = """(SELECT h.alert_level FROM gdacs_alert_history h
                        WHERE h.event_id = disaster_events.event_id
                        ORDER BY h.observed_at DESC, h.episode_id DESC LIMIT 1)"""
@@ -66,6 +120,17 @@ def events(source: str = None, disaster_type: str = None, status: str = None, st
 
 @app.get("/api/v1/events/{event_id}")
 def event(event_id: str):
+    """Look up a disaster event and its source-specific details.
+
+    Args:
+        event_id: Event identifier with its source prefix.
+
+    Returns:
+        An event with earthquake details, GDACS alert history, and EONET observations.
+
+    Raises:
+        HTTPException: If the event does not exist.
+    """
     rows = query("SELECT * FROM disaster_events WHERE event_id = %s", (event_id,))
     if not rows:
         raise HTTPException(404, "event not found")
@@ -82,6 +147,22 @@ def event(event_id: str):
 @app.get("/api/v1/earthquakes")
 def earthquakes(min_magnitude: float = None, max_magnitude: float = None, max_depth_km: float = None, severity: str = None,
                 start: datetime = FROM, end: datetime = TO, bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET):
+    """List USGS earthquakes matching the supplied filters.
+
+    Args:
+        min_magnitude: Inclusive minimum magnitude.
+        max_magnitude: Inclusive maximum magnitude.
+        max_depth_km: Inclusive maximum depth in kilometers.
+        severity: Magnitude band to include.
+        start: Inclusive lower bound for the earthquake time.
+        end: Inclusive upper bound for the earthquake time.
+        bbox: Geographic bounds in west, south, east, north order.
+        limit: Maximum number of earthquakes to return.
+        offset: Number of matching earthquakes to skip.
+
+    Returns:
+        A page of earthquake records and their event details.
+    """
     clause, params = where(("q.magnitude >= %s", min_magnitude), ("q.magnitude <= %s", max_magnitude),
                            ("q.depth_km <= %s", max_depth_km), ("q.severity = %s", severity),
                            ("e.started_at >= %s", start), ("e.started_at <= %s", end), bbox=bbox, lat="e.latitude", lon="e.longitude")
@@ -94,6 +175,18 @@ def earthquakes(min_magnitude: float = None, max_magnitude: float = None, max_de
 
 @app.get("/api/v1/alerts/active")
 def active_alerts(alert_level: str = None, disaster_type: str = None, bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET):
+    """List current GDACS alerts in descending order of severity.
+
+    Args:
+        alert_level: GDACS alert level to include.
+        disaster_type: Standardized hazard type.
+        bbox: Geographic bounds in west, south, east, north order.
+        limit: Maximum number of alerts to return.
+        offset: Number of matching alerts to skip.
+
+    Returns:
+        A page of current GDACS alerts.
+    """
     clause, params = where(("alert_level = %s", alert_level.lower() if alert_level else None),
                            ("disaster_type = %s", disaster_type), bbox=bbox)
     rows = query(f"""SELECT * FROM analytics.active_alerts WHERE {clause}
@@ -105,6 +198,20 @@ def active_alerts(alert_level: str = None, disaster_type: str = None, bbox: str 
 @app.get("/api/v1/fires/heatmap")
 def fire_heatmap(day: date = None, start: date = FROM, end: date = TO, min_count: int = None, bbox: str = BBOX,
                  limit: int = Query(5000, ge=1, le=50000), offset: int = OFFSET):
+    """List daily FIRMS hotspot statistics by grid cell.
+
+    Args:
+        day: Exact UTC date. The newest available date is used if no dates are given.
+        start: First UTC date to include.
+        end: Last UTC date to include.
+        min_count: Minimum number of detections per grid cell.
+        bbox: Geographic bounds applied to cell origins.
+        limit: Maximum number of cells to return.
+        offset: Number of matching cells to skip.
+
+    Returns:
+        A page of daily hotspot cells with the grid size in degrees.
+    """
     if not (day or start or end):   # default: most recent day with data
         day = query("SELECT max(day) AS d FROM analytics.daily_fire_grid")[0]["d"]
     clause, params = where(("day = %s", day), ("day >= %s", start), ("day <= %s", end), ("detection_count >= %s", min_count),
@@ -117,6 +224,20 @@ def fire_heatmap(day: date = None, start: date = FROM, end: date = TO, min_count
 @app.get("/api/v1/fires/detections")
 def fire_detections(start: datetime = FROM, end: datetime = TO, confidence: str = None, min_frp: float = None,
                     bbox: str = BBOX, limit: int = LIMIT, offset: int = OFFSET):
+    """List individual FIRMS satellite detections.
+
+    Args:
+        start: Inclusive lower bound for the detection time.
+        end: Inclusive upper bound for the detection time.
+        confidence: Confidence category to include.
+        min_frp: Minimum fire radiative power in megawatts.
+        bbox: Geographic bounds in west, south, east, north order.
+        limit: Maximum number of detections to return.
+        offset: Number of matching detections to skip.
+
+    Returns:
+        A page of satellite detection records.
+    """
     clause, params = where(("acquired_at >= %s", start), ("acquired_at <= %s", end), ("confidence = %s", confidence),
                            ("frp >= %s", min_frp), bbox=bbox)
     rows = query(f"SELECT * FROM fire_detections WHERE {clause} ORDER BY acquired_at DESC, detection_id LIMIT %s OFFSET %s",
@@ -126,11 +247,23 @@ def fire_detections(start: datetime = FROM, end: datetime = TO, confidence: str 
 
 @app.get("/api/v1/weather")
 def weather(event_id: str = None, start: datetime = FROM, end: datetime = TO, limit: int = LIMIT, offset: int = OFFSET):
+    """List forecasts from the latest available retrieval.
+
+    Args:
+        event_id: Event to query. Omit to get one upcoming forecast per event.
+        start: Earliest forecast time when an event is specified.
+        end: Latest forecast time when an event is specified.
+        limit: Maximum number of forecasts to return.
+        offset: Number of matching forecasts to skip.
+
+    Returns:
+        A page of hourly forecasts for one event or upcoming forecasts across events.
+    """
     if not event_id:   # without an event: next forecast hour for every event
         rows = query("SELECT * FROM analytics.latest_event_weather ORDER BY event_id LIMIT %s OFFSET %s", (limit, offset))
         return page(rows, limit, offset)
     clause, params = where(("forecast_time >= %s", start), ("forecast_time <= %s", end))
-    # hourly forecast from the most recent retrieval for this event
+    # Keep all hours in the response from the same forecast retrieval.
     rows = query(f"""SELECT * FROM weather_forecasts
                      WHERE event_id = %s AND retrieved_at = (SELECT max(retrieved_at) FROM weather_forecasts WHERE event_id = %s)
                        AND {clause} ORDER BY forecast_time LIMIT %s OFFSET %s""", [event_id, event_id] + params + [limit, offset])
@@ -140,6 +273,19 @@ def weather(event_id: str = None, start: datetime = FROM, end: datetime = TO, li
 @app.get("/api/v1/analytics/daily")
 def daily_counts(source: str = None, disaster_type: str = None, start: date = FROM, end: date = TO,
                  limit: int = Query(1000, ge=1, le=10000), offset: int = OFFSET):
+    """List daily event counts by source and hazard type.
+
+    Args:
+        source: Source feed to include.
+        disaster_type: Standardized hazard type.
+        start: First UTC date to include.
+        end: Last UTC date to include.
+        limit: Maximum number of summary rows to return.
+        offset: Number of matching rows to skip.
+
+    Returns:
+        A page of daily event counts.
+    """
     clause, params = where(("source = %s", source), ("disaster_type = %s", disaster_type), ("day >= %s", start), ("day <= %s", end))
     rows = query(f"SELECT * FROM analytics.daily_event_counts WHERE {clause} ORDER BY day DESC, source, disaster_type "
                  f"LIMIT %s OFFSET %s", params + [limit, offset])
@@ -148,6 +294,11 @@ def daily_counts(source: str = None, disaster_type: str = None, start: date = FR
 
 @app.get("/api/v1/system/freshness")
 def freshness():
+    """Report ingestion and processing status for the source feeds.
+
+    Returns:
+        A dictionary with the check time and freshness details for each feed.
+    """
     rows = query("""SELECT *, round(extract(epoch FROM now() - last_success_at) / 60) AS minutes_since_success,
                            now() - last_success_at > 2 * expected_minutes * interval '1 minute' AS is_stale
                     FROM analytics.source_freshness""")

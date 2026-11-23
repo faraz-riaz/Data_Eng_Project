@@ -5,8 +5,8 @@
     spark-submit etl.py fires     FIRMS -> fire_detections, analytics.daily_fire_grid
     spark-submit etl.py weather   Open-Meteo -> weather_forecasts
 
-Each step reads unprocessed staging rows (id <= max id at start), writes the cleaned batch to tmp.*
-with Spark JDBC, upserts it with SQL, then marks the staging rows processed. Re-running is safe.
+Each step reads a bounded staging batch, writes it to PostgreSQL scratch tables with
+Spark JDBC, and upserts the cleaned records before marking the batch processed.
 """
 import os, sys
 
@@ -24,7 +24,14 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 
 def sql(*statements):
-    """Run SQL statements in one PostgreSQL transaction (driver side)."""
+    """Run PostgreSQL statements in one transaction from the Spark driver.
+
+    Args:
+        *statements: SQL statements to execute in order.
+
+    Returns:
+        Rows from the final statement if it returns data, or None.
+    """
     conn = psycopg2.connect(**PG, options="-c timezone=UTC")
     with conn, conn.cursor() as cur:
         for s in statements:
@@ -35,15 +42,38 @@ def sql(*statements):
 
 
 def read(query):
+    """Load a PostgreSQL query into Spark through JDBC.
+
+    Args:
+        query: SQL query to read.
+
+    Returns:
+        A Spark DataFrame backed by the query.
+    """
     return spark.read.jdbc(JDBC_URL, f"({query}) q", properties=JDBC)
 
 
 def write_tmp(df, name):
+    """Replace a PostgreSQL scratch table with the current Spark batch.
+
+    Args:
+        df: DataFrame to write.
+        name: Table name within the tmp schema.
+    """
     df.write.jdbc(JDBC_URL, f"tmp.{name}", mode="overwrite", properties=JDBC)
 
 
 def read_staging(sources):
-    """New staging rows for the given sources, plus the max id so we can mark exactly these rows later."""
+    """Read a bounded batch of unprocessed source records.
+
+    Args:
+        sources: Internal source feed identifiers to include.
+
+    Returns:
+        A tuple of the cached DataFrame, the batch's maximum staging ID, and the
+        SQL source list used to mark the same batch processed.
+    """
+    # The cutoff leaves records that arrive during this job for the next batch.
     max_id = sql("SELECT coalesce(max(id), 0) FROM staging.source_records")[0][0]
     src = ",".join(f"'{s}'" for s in sources)
     df = read(f"SELECT id, source, record_id, fetched_at, payload::text AS payload FROM staging.source_records "
@@ -52,25 +82,66 @@ def read_staging(sources):
 
 
 def mark_processed(max_id, src):
+    """Mark staged rows for the completed source batch as processed.
+
+    Args:
+        max_id: Inclusive upper staging ID from the start of the batch.
+        src: SQL source list returned by read_staging.
+    """
     sql(f"UPDATE staging.source_records SET processed_at = now() "
         f"WHERE processed_at IS NULL AND id <= {max_id} AND source IN ({src})")
 
 
 def latest(df, key, order):
-    """Keep only the newest version of each key (a batch can contain several revisions)."""
+    """Keep the most recent row for each record key.
+
+    Args:
+        df: DataFrame of staged versions.
+        key: Column that identifies a record.
+        order: Column used to rank versions from newest to oldest.
+
+    Returns:
+        A DataFrame with one row per key. The larger staging ID breaks ties.
+    """
     w = Window.partitionBy(key).orderBy(F.desc(order), F.desc("id"))
     return df.withColumn("rn", F.row_number().over(w)).filter("rn = 1").drop("rn")
 
 
 def valid_coords(lat, lon):
+    """Build a Spark condition for coordinates in standard geographic bounds.
+
+    Args:
+        lat: Name of the latitude column.
+        lon: Name of the longitude column.
+
+    Returns:
+        A Spark column expression for use in filters or conditional values.
+    """
     return F.col(lat).between(-90, 90) & F.col(lon).between(-180, 180)
 
 
 def mapping(d):
+    """Convert a Python dictionary to a Spark map expression.
+
+    Args:
+        d: Mapping of source values to their standardized values.
+
+    Returns:
+        A Spark column expression containing the literal map.
+    """
     return F.create_map(*[F.lit(x) for kv in d.items() for x in kv])
 
 
 def lookup(d, key):
+    """Look up a source value in a Spark map expression.
+
+    Args:
+        d: Mapping of source values to their standardized values.
+        key: Spark column expression that supplies the lookup key.
+
+    Returns:
+        A Spark column with the mapped value or null for an unknown key.
+    """
     return F.element_at(mapping(d), key)
 
 
@@ -99,6 +170,14 @@ EVENT_COLS = ["id", "event_id", "source", "source_event_id", "disaster_type", "t
 
 
 def usgs_events(raw):
+    """Convert staged USGS records to the shared event format.
+
+    Args:
+        raw: Staging DataFrame containing JSON payloads and source identifiers.
+
+    Returns:
+        USGS event rows with normalized timestamps and seismic details.
+    """
     p = raw.filter("source = 'usgs'").select("id", F.from_json("payload", USGS_SCHEMA).alias("j"))
     mag = F.col("j.properties.mag")
     depth = F.col("j.geometry.coordinates")[2]
@@ -129,6 +208,14 @@ def usgs_events(raw):
 
 
 def gdacs_parsed(raw):
+    """Extract event and alert fields from staged GDACS records.
+
+    Args:
+        raw: Staging DataFrame containing JSON payloads and source identifiers.
+
+    Returns:
+        Parsed GDACS rows with standardized hazards, alert levels, and episode IDs.
+    """
     p = raw.filter("source = 'gdacs'").select("id", F.from_json("payload", GDACS_SCHEMA).alias("j")).select("id", "j.*")
     return p.select(
         "id",
@@ -150,6 +237,14 @@ def gdacs_parsed(raw):
 
 
 def gdacs_events(g):
+    """Convert parsed GDACS rows to the shared event format.
+
+    Args:
+        g: Parsed GDACS DataFrame from gdacs_parsed.
+
+    Returns:
+        Event rows with closure times for closed alerts and empty seismic fields.
+    """
     return (g.withColumn("source", F.lit("gdacs"))
             .withColumn("ended_at", F.when(F.col("status") == "closed", F.col("todate")))
             .withColumn("magnitude", F.lit(None).cast("double")).withColumn("magnitude_type", F.lit(None).cast("string"))
@@ -158,6 +253,14 @@ def gdacs_events(g):
 
 
 def eonet_geometries(raw):
+    """Expand staged EONET events into dated geometry observations.
+
+    Args:
+        raw: Staging DataFrame containing JSON payloads and source identifiers.
+
+    Returns:
+        One row per geometry with its GeoJSON and representative coordinates.
+    """
     p = raw.filter("source = 'eonet'").select("id", F.from_json("payload", EONET_SCHEMA).alias("j"))
     g = p.select("id", F.col("j.id").alias("eonet_id"), F.explode("j.geometry").alias("g")).select(
         "id", F.concat(F.lit("eonet:"), "eonet_id").alias("event_id"),
@@ -177,6 +280,15 @@ def eonet_geometries(raw):
 
 
 def eonet_events(raw, geoms):
+    """Convert staged EONET records to the shared event format.
+
+    Args:
+        raw: Staging DataFrame containing JSON payloads and source identifiers.
+        geoms: Dated EONET observations from eonet_geometries.
+
+    Returns:
+        EONET event rows with observation dates and the latest observed location.
+    """
     p = raw.filter("source = 'eonet'").select("id", F.from_json("payload", EONET_SCHEMA).alias("j"))
     loc = geoms.groupBy("id").agg(F.min("observed_at").alias("started_at"), F.max("observed_at").alias("last_geometry_at"),
                                   F.max_by("lat", "observed_at").alias("latitude"), F.max_by("lon", "observed_at").alias("longitude"))
@@ -201,6 +313,7 @@ def eonet_events(raw, geoms):
 
 
 def run_events():
+    """Upsert disaster events and related records, then refresh daily event counts."""
     raw, max_id, src = read_staging(["usgs", "gdacs", "eonet"])
     gdacs = gdacs_parsed(raw).cache()
     geoms = eonet_geometries(raw).cache()
@@ -214,7 +327,7 @@ def run_events():
     events = events.withColumn("latitude", F.when(ok, F.col("latitude"))).withColumn("longitude", F.when(ok, F.col("longitude")))
     write_tmp(latest(events, "event_id", "updated_at"), "events")
 
-    # every GDACS revision is kept: first time each (episode, alert level) was seen
+    # Keep the first observation of each alert level within a GDACS episode.
     alerts = (gdacs.filter(F.col("alert_level").isin("green", "orange", "red"))
               .groupBy("event_id", "episode_id", "alert_level")
               .agg(F.min("updated_at").alias("observed_at"), F.max("alert_score").alias("alert_score")))
@@ -250,7 +363,7 @@ def run_events():
                magnitude_value = EXCLUDED.magnitude_value, magnitude_unit = EXCLUDED.magnitude_unit""")
     mark_processed(max_id, src)
 
-    # full refresh of the daily counts from the cleaned table
+    # Recount from the cleaned table so revised event dates affect both days.
     counts = (read("SELECT source, disaster_type, started_at FROM disaster_events WHERE started_at IS NOT NULL")
               .groupBy(F.to_date("started_at").alias("day"), "source", "disaster_type").agg(F.count("*").alias("event_count")))
     write_tmp(counts, "daily_counts")
@@ -261,6 +374,7 @@ def run_events():
 
 
 def run_fires():
+    """Upsert FIRMS detections and refresh hotspot grids for the affected UTC dates."""
     raw, max_id, src = read_staging(["firms"])
     j = raw.select("id", "record_id", F.from_json("payload", ", ".join(f"{c} STRING" for c in FIRMS_FIELDS)).alias("j"))
     fires = j.select(
@@ -302,9 +416,10 @@ def run_fires():
 
 
 def run_weather():
+    """Expand Open-Meteo forecast arrays and store one row per event and forecast hour."""
     raw, max_id, src = read_staging(["openmeteo"])
     j = raw.select("id", "fetched_at", F.from_json("payload", METEO_SCHEMA).alias("j"))
-    # hourly arrays -> one row per forecast hour
+    # Use the hour's array index to pick the matching weather values.
     rows = j.select("fetched_at", "j.event_id", "j.latitude", "j.longitude", "j.hourly",
                     F.posexplode("j.hourly.time").alias("i", "t"))
     weather = rows.select(

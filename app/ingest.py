@@ -23,11 +23,25 @@ WEATHER_MAX_SITES = int(os.getenv("WEATHER_MAX_SITES", "50"))
 
 
 def db():
+    """Open a PostgreSQL connection using the service environment.
+
+    Returns:
+        An open connection that the caller must close.
+    """
     return psycopg2.connect(host=os.getenv("POSTGRES_HOST", "postgres"), dbname=os.environ["POSTGRES_DB"],
                             user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"])
 
 
 def sql(query, params=None):
+    """Execute a PostgreSQL statement in its own transaction.
+
+    Args:
+        query: SQL statement to execute.
+        params: Values to bind to the statement, if any.
+
+    Returns:
+        Rows as tuples when the statement returns data, or None.
+    """
     conn = db()
     try:
         with conn, conn.cursor() as cur:
@@ -38,11 +52,27 @@ def sql(query, params=None):
 
 
 def minio():
+    """Create a client for the pipeline's MinIO service.
+
+    Returns:
+        A MinIO client configured with the service credentials.
+    """
     return Minio("minio:9000", os.environ["MINIO_ROOT_USER"], os.environ["MINIO_ROOT_PASSWORD"], secure=False)
 
 
 def get(url, params=None):
-    """GET with 3 attempts. The FIRMS key is part of the URL, so it is masked in errors."""
+    """Fetch an upstream response with up to three attempts.
+
+    Args:
+        url: Upstream URL.
+        params: Optional query parameters.
+
+    Returns:
+        The successful HTTP response.
+
+    Raises:
+        RuntimeError: If all attempts fail. The FIRMS key is masked in the error.
+    """
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, timeout=60)
@@ -57,7 +87,19 @@ def get(url, params=None):
 # ---------------------------------------------------------------- 1. request
 
 def request_source(source, sites):
-    """Return the raw response bodies (bytes) for one run. GDACS and Open-Meteo may need several requests."""
+    """Download the upstream response bodies for one ingestion run.
+
+    Args:
+        source: Source feed identifier.
+        sites: Ordered event locations for Open-Meteo requests.
+
+    Returns:
+        A list of raw response bodies as bytes, in request order.
+
+    Raises:
+        ValueError: If the source identifier is unsupported.
+        RuntimeError: If a request fails or FIRMS returns an unexpected response.
+    """
     today = datetime.now(timezone.utc).date()
     if source == "usgs":
         return [get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson").content]
@@ -95,7 +137,11 @@ def request_source(source, sites):
 
 
 def weather_sites():
-    """Locations of current disasters (from the cleaned tables) to sample with Open-Meteo."""
+    """Choose locations for the next Open-Meteo run.
+
+    Returns:
+        Event IDs and rounded coordinates for eligible active events and recent earthquakes.
+    """
     rows = sql("""
         SELECT e.event_id, round(e.latitude::numeric, 3), round(e.longitude::numeric, 3)
         FROM disaster_events e LEFT JOIN earthquake_details q USING (event_id)
@@ -109,7 +155,15 @@ def weather_sites():
 # ---------------------------------------------------------------- 2+3. check and archive
 
 def fetch_and_archive(source, sites=None):
-    """Request the API and store the original responses in MinIO. Returns the run_id."""
+    """Archive upstream responses and record the ingestion run.
+
+    Args:
+        source: Source feed identifier.
+        sites: Locations for Open-Meteo. An empty list causes that run to be skipped.
+
+    Returns:
+        The ingestion run ID, including for a skipped run.
+    """
     now = datetime.now(timezone.utc)
     run_id = f"{source}_{now:%Y%m%dT%H%M%S}"
     prefix = f"{source}/{now:%Y/%m/%d}/{run_id}/"
@@ -124,6 +178,7 @@ def fetch_and_archive(source, sites=None):
         mc = minio()
         if not mc.bucket_exists(BUCKET):
             mc.make_bucket(BUCKET)
+        # Preserve the site order for linking archived forecasts back to event IDs.
         objects = [("request.json", json.dumps({"source": source, "fetched_at": now.isoformat(), "sites": sites}).encode())]
         ext = "csv" if source == "firms" else "json"
         objects += [(f"page_{i:03d}.{ext}.gz", gzip.compress(b)) for i, b in enumerate(bodies, 1)]
@@ -140,7 +195,19 @@ def fetch_and_archive(source, sites=None):
 # ---------------------------------------------------------------- 4. parse
 
 def parse(source, bodies, sites):
-    """Split raw responses into (record_id, payload) pairs with stable source identifiers."""
+    """Convert raw responses into records with stable source identifiers.
+
+    Args:
+        source: Source feed identifier.
+        bodies: Raw response bodies in request order.
+        sites: Event locations in the same order as the Open-Meteo results.
+
+    Returns:
+        A dictionary mapping record IDs to parsed payloads.
+
+    Raises:
+        ValueError: If the source identifier or a parsed value is invalid.
+    """
     if source == "usgs":
         return {f["id"]: f for f in json.loads(bodies[0])["features"]}
     if source == "gdacs":
@@ -157,7 +224,7 @@ def parse(source, bodies, sites):
         for b in bodies:
             data = json.loads(b)
             results += data if isinstance(data, list) else [data]   # a single location returns an object
-        # responses come back in request order; generationtime_ms is dropped because it changes every call
+        # Match responses by request order and omit generation time from change detection.
         return {s["event_id"]: {"event_id": s["event_id"], "latitude": r["latitude"], "longitude": r["longitude"],
                                 "hourly_units": r["hourly_units"], "hourly": r["hourly"]}
                 for s, r in zip(sites, results)}
@@ -167,7 +234,17 @@ def parse(source, bodies, sites):
 # ---------------------------------------------------------------- 5+6. publish and record
 
 def publish_changes(run_id):
-    """Read the archived responses, publish only new or changed records to Kafka, record the result."""
+    """Publish new or changed records from a MinIO archive to Kafka.
+
+    Args:
+        run_id: ID of the archived or skipped ingestion run.
+
+    Returns:
+        The number of published records, or zero for a skipped run.
+
+    Raises:
+        RuntimeError: If Kafka does not confirm delivery of the full batch.
+    """
     source, status, prefix, fetched_at = sql(
         "SELECT source, status, archive_prefix, started_at FROM ops.ingestion_runs WHERE run_id=%s", (run_id,))[0]
     if status == "skipped":
@@ -180,6 +257,7 @@ def publish_changes(run_id):
         bodies = [gzip.decompress(read(n)) for n in names if "/page_" in n]
         records = parse(source, bodies, sites)
 
+        # Sort payload keys so field order alone cannot trigger a new version.
         hashes = {rid: hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest() for rid, p in records.items()}
         known = dict(sql("SELECT record_id, content_hash FROM ops.published_records WHERE source=%s AND record_id = ANY(%s)",
                          (source, list(records))))
@@ -197,7 +275,7 @@ def publish_changes(run_id):
         if producer.flush(120) > 0 or errors:
             raise RuntimeError(f"Kafka delivery failed: {errors[:3]}")
 
-        # remember what was published only after Kafka confirmed delivery
+        # Save the hashes only after Kafka confirms delivery of the batch.
         conn = db()
         with conn, conn.cursor() as cur:
             execute_values(cur, """INSERT INTO ops.published_records (source, record_id, content_hash) VALUES %s
@@ -213,6 +291,14 @@ def publish_changes(run_id):
 
 
 def run_once(source):
+    """Fetch, archive, and publish one ingestion run.
+
+    Args:
+        source: Source feed identifier.
+
+    Returns:
+        The ingestion run ID.
+    """
     sites = weather_sites() if source == "openmeteo" else None
     run_id = fetch_and_archive(source, sites)
     published = publish_changes(run_id)

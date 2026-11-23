@@ -3,7 +3,7 @@ import csv, io, os, time
 from datetime import datetime, timedelta, timezone
 import requests
 
-# Load .env (KEY=VALUE lines) without extra dependencies
+# Use .env to fill in settings absent from the shell environment.
 if os.path.exists(".env"):
     for line in open(".env"):
         if "=" in line and not line.startswith("#"):
@@ -15,7 +15,16 @@ today = datetime.now(timezone.utc).date()
 
 
 def fetch(url, params=None):
-    """GET with 20 s timeout and at most two attempts. Returns (response, seconds, error)."""
+    """Check an upstream endpoint with at most two HTTP attempts.
+
+    Args:
+        url: Endpoint URL.
+        params: Optional query parameters.
+
+    Returns:
+        A tuple of the response, elapsed seconds, and error text. On failure, the
+        response is None and the FIRMS key is masked in the error.
+    """
     err = None
     for _ in range(2):
         t = time.time()
@@ -31,6 +40,14 @@ def fetch(url, params=None):
 
 
 def check_usgs(r):
+    """Check the shape of a USGS earthquake feed response.
+
+    Args:
+        r: HTTP response containing the GeoJSON feed.
+
+    Returns:
+        The event count and representative fields from the first event.
+    """
     feats = r.json()["features"]
     f = feats[0]
     fields = {"id": f.get("id"), "time": f["properties"].get("time"), "updated": f["properties"].get("updated"),
@@ -39,6 +56,14 @@ def check_usgs(r):
 
 
 def check_gdacs(r):
+    """Check the shape of a GDACS event feed response.
+
+    Args:
+        r: HTTP response containing the GeoJSON feed.
+
+    Returns:
+        The event count and sample alert, date, and coordinate fields.
+    """
     feats = r.json()["features"]
     p = feats[0]["properties"]
     fields = {k: p.get(k) for k in ["eventtype", "eventid", "episodeid", "alertlevel", "fromdate", "todate", "datemodified", "country"]}
@@ -47,6 +72,14 @@ def check_gdacs(r):
 
 
 def check_firms(r):
+    """Check the FIRMS CSV header and sample detection fields.
+
+    Args:
+        r: HTTP response containing the CSV feed.
+
+    Returns:
+        The detection count and sample values keyed by CSV column.
+    """
     rows = list(csv.DictReader(io.StringIO(r.text)))
     header = r.text.splitlines()[0].split(",")
     fields = {h: (rows[0][h] if rows else "(no rows)") for h in header}
@@ -54,6 +87,14 @@ def check_firms(r):
 
 
 def check_eonet(r):
+    """Check the shape of an EONET event feed response.
+
+    Args:
+        r: HTTP response containing the JSON feed.
+
+    Returns:
+        The event count and sample category, closure, and geometry fields.
+    """
     events = r.json()["events"]
     e = events[0]
     fields = {"id": e.get("id"), "title": e.get("title"), "categories": [c["id"] for c in e.get("categories", [])],
@@ -62,6 +103,14 @@ def check_eonet(r):
 
 
 def check_meteo(r):
+    """Check the expected hourly arrays in an Open-Meteo forecast.
+
+    Args:
+        r: HTTP response containing a single-location forecast.
+
+    Returns:
+        The forecast hour count and sample values for the expected arrays.
+    """
     h = r.json()["hourly"]
     fields = {k: (h[k][:2] if k in h else None) for k in ["time", "temperature_2m", "precipitation", "wind_speed_10m", "relative_humidity_2m"]}
     return len(h["time"]), fields

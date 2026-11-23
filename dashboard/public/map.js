@@ -6,6 +6,13 @@ const worldBounds = [[-90, -180], [90, 180]];
 const hotspotGradient = { 0.18: '#306de0', 0.42: '#2bd0d2', 0.63: '#ffe163', 0.82: '#fb7a32', 1: '#de2c49' };
 const MAX_CELLS = 8000;
 
+/**
+ * Create an element with plain text for a map label or popup.
+ * @param {string} tag - HTML tag name.
+ * @param {string} value - Text to display.
+ * @param {string} [className] - CSS class to apply.
+ * @returns {HTMLElement} The new element.
+ */
 function text(tag, value, className) {
   const node = document.createElement(tag);
   node.textContent = value;
@@ -13,6 +20,11 @@ function text(tag, value, className) {
   return node;
 }
 
+/**
+ * Initialize the Leaflet map, its layer controls, and interactions.
+ * @param {function(Object): void} onEvent - Callback for opening event details.
+ * @returns {Object} Controller with an update method for changing map data.
+ */
 export function createActivityMap(onEvent) {
   const map = L.map('map', {
     crs: L.CRS.EPSG4326, attributionControl: false, zoomControl: false,
@@ -47,6 +59,7 @@ export function createActivityMap(onEvent) {
   const mapMessage = document.querySelector('#map-message');
   const summary = document.querySelector('#map-summary');
 
+  /** Adjust the heatmap radius and intensity to the map size and zoom. */
   function sizeHeatLayer() {
     if (!mapNode.clientWidth) return;
     const radius = Math.max(7, Math.min(15, Math.round(mapNode.clientWidth / 70)));
@@ -55,6 +68,7 @@ export function createActivityMap(onEvent) {
     fireLayer.setOptions({ radius, blur, max });
   }
 
+  /** Reset the map to the selected region or the world view. */
   function fitRegion() {
     movedByUser = false;
     if (!mapNode.clientWidth || !mapNode.clientHeight) return;
@@ -97,6 +111,7 @@ export function createActivityMap(onEvent) {
   resize.observe(mapNode);
   fitRegion();
 
+  /** Display the hazard or heat-density legend for the active layer. */
   function setLegend() {
     if (activeMode === 'hotspots') {
       const scale = text('i', '', 'density-scale');
@@ -118,12 +133,22 @@ export function createActivityMap(onEvent) {
     }));
   }
 
+  /**
+   * Update the map status overlay and summary line.
+   * @param {string|null} message - Overlay text, or null to hide it.
+   * @param {string} subtitle - Summary text above the map.
+   */
   function setMessage(message, subtitle) {
     mapMessage.textContent = message || '';
     mapMessage.hidden = !message;
     summary.textContent = subtitle;
   }
 
+  /**
+   * Display event markers for records with valid map coordinates.
+   * @param {Object[]|undefined} events - Event records, if loaded.
+   * @param {string} message - Overlay text when events are unavailable.
+   */
   function showEvents(events, message) {
     eventLayer.clearLayers();
     if (!events) {
@@ -163,8 +188,14 @@ export function createActivityMap(onEvent) {
       `${number.format(points.length)} mapped event records`);
   }
 
+  /**
+   * Display the busiest FIRMS cells on the heatmap.
+   * @param {Object[]|undefined} cells - Aggregated hotspot cells, if loaded.
+   * @param {string} message - Overlay text when cells are unavailable.
+   */
   function showHotspots(cells, message) {
     map.closePopup();
+    // Shift each half-degree cell from its southwest corner to its center.
     visibleCells = (cells || []).slice(0, MAX_CELLS)
       .map(cell => ({ cell, center: [cell.lat + .25, cell.lon + .25] }));
     fireLayer.setLatLngs(visibleCells.map(({ cell, center }) => [...center, Math.sqrt(cell.count)]));
@@ -205,6 +236,13 @@ export function createActivityMap(onEvent) {
   setLegend();
 
   return {
+    /**
+     * Refresh the active layer, selected region, and visible map data.
+     * @param {string} mode - Events or hotspots.
+     * @param {string} selectedRegion - Dashboard region key.
+     * @param {Object[]|undefined} content - Records for the selected layer, if loaded.
+     * @param {string} message - Status text when layer data is unavailable.
+     */
     update(mode, selectedRegion, content, message) {
       if (selectedRegion !== region) {
         region = selectedRegion;

@@ -7,6 +7,11 @@ import { createActivityMap } from './map.js';
 import { createCharts, createSparklines } from './charts.js';
 import { icon, installIcons } from './icons.js';
 
+/**
+ * Find the first dashboard element that matches a CSS selector.
+ * @param {string} selector - CSS selector to query.
+ * @returns {Element|null} Matching element, if present.
+ */
 const $ = selector => document.querySelector(selector);
 const defaultSelection = { days: 7, hazard: 'all', region: 'world', alertLevel: null, custom: null };
 const state = {
@@ -23,6 +28,13 @@ const REFRESH_INTERVAL = 60_000;
 const MAX_RANGE = 90;
 const ALERT_PREVIEW = 7;
 
+/**
+ * Create an element with optional plain text and a CSS class.
+ * @param {string} tag - HTML tag name.
+ * @param {string} [text] - Text to display.
+ * @param {string} [className] - CSS class to apply.
+ * @returns {HTMLElement} The new element.
+ */
 function node(tag, text, className) {
   const element = document.createElement(tag);
   if (text != null) element.textContent = text;
@@ -30,10 +42,21 @@ function node(tag, text, className) {
   return element;
 }
 
+/**
+ * Format a dashboard count or show a placeholder for missing data.
+ * @param {number|null|undefined} value - Count to display.
+ * @returns {string} Formatted count or an em dash.
+ */
 function displayNumber(value) {
   return value == null ? '—' : number.format(value);
 }
 
+/**
+ * Create a message for an empty, loading, or unavailable panel.
+ * @param {string} title - Short status heading.
+ * @param {string} description - Detail to display below the heading.
+ * @returns {HTMLElement} Status message element.
+ */
 function emptyBlock(title, description) {
   const block = node('div', null, 'empty-block');
   block.append(node('strong', title), node('p', description));
@@ -51,6 +74,11 @@ const map = createActivityMap(openEvent);
 const updateCharts = createCharts();
 const updateSparklines = createSparklines();
 
+/**
+ * Build a clickable GDACS alert row.
+ * @param {Object} alert - Active alert from the pipeline API.
+ * @returns {HTMLButtonElement} Row that opens the event details.
+ */
 function alertRow(alert) {
   const { color, icon: glyph } = HAZARDS[hazardKey(alert.disaster_type)];
   const row = node('button', null, 'alert-row');
@@ -72,6 +100,11 @@ function alertRow(alert) {
   return row;
 }
 
+/**
+ * Create a definition list for event details.
+ * @param {Array} entries - Pairs of field labels and display values.
+ * @returns {HTMLDListElement} List of event details.
+ */
 function detailsGrid(entries) {
   const grid = node('dl', null, 'detail-grid');
   for (const [label, value] of entries) {
@@ -82,6 +115,12 @@ function detailsGrid(entries) {
   return grid;
 }
 
+/**
+ * Create a table for alert history, geometry observations, or forecasts.
+ * @param {string[]} headers - Column labels.
+ * @param {Array[]} rows - Display values for each row.
+ * @returns {HTMLTableElement} Table with a header and body.
+ */
 function detailTable(headers, rows) {
   const table = node('table', null, 'detail-table');
   const head = table.createTHead().insertRow();
@@ -98,10 +137,21 @@ function detailTable(headers, rows) {
   return table;
 }
 
+/**
+ * Format a measurement with its unit.
+ * @param {number|null|undefined} value - Measurement to display.
+ * @param {string} unit - Display unit.
+ * @returns {string} Formatted measurement or an em dash.
+ */
 function measurement(value, unit) {
   return value == null ? '—' : `${number.format(value)} ${unit}`;
 }
 
+/**
+ * Open the event dialog and load details and upcoming weather.
+ * @param {Object} record - Event or alert with an event ID.
+ * @returns {Promise<void>} Resolves when the dialog has been updated.
+ */
 async function openEvent(record) {
   detailController?.abort();
   detailController = new AbortController();
@@ -114,6 +164,7 @@ async function openEvent(record) {
   subtitle.textContent = [SOURCES[record.source || eventId.split(':')[0]], typeLabel(record.disaster_type)].join(' · ');
   content.replaceChildren(node('p', 'Loading event details…'));
   if (!eventDetail.open) eventDetail.showModal();
+  // A failed forecast request still lets the dialog show event details.
   const [eventResult, weatherResult] = await Promise.allSettled([
     get('/events/' + encodeURIComponent(eventId), {}, signal),
     get('/weather', { event_id: eventId, from: new Date().toISOString(), limit: 6 }, signal),
@@ -192,6 +243,11 @@ for (const dialog of [eventDetail, allAlerts, dateRangeDialog]) {
 
 let renderedAlerts;
 let renderedAlertState;
+/**
+ * Update the active alert count and preview list.
+ * @param {Object[]|undefined} alerts - Matching current alerts, if loaded.
+ * @param {string} status - Loading, unavailable, or ready state.
+ */
 function renderAlerts(alerts, status) {
   $('#alert-count').textContent = displayNumber(alerts?.length);
   const tag = $('#alert-total');
@@ -209,6 +265,7 @@ function renderAlerts(alerts, status) {
   if (allAlerts.open) renderAllAlerts();
 }
 
+/** Populate the dialog with all active alerts matching the current filters. */
 function renderAllAlerts() {
   const alerts = state.data.alerts || [];
   $('#all-alerts-note').textContent = `${displayNumber(alerts.length)} current alerts · ${REGIONS[state.selection.region].label}`;
@@ -223,6 +280,11 @@ $('#view-alerts').addEventListener('click', () => {
 
 let renderedSources;
 let renderedSourceState;
+/**
+ * Show each source's last run and processing status.
+ * @param {Object[]|undefined} sources - Source freshness records, if loaded.
+ * @param {string} status - Loading, unavailable, or ready state.
+ */
 function renderSources(sources, status) {
   if (renderedSources === sources && renderedSourceState === status) return;
   renderedSources = sources;
@@ -258,11 +320,25 @@ function renderSources(sources, status) {
   }));
 }
 
+/**
+ * Resolve the display status for one dashboard section.
+ * @param {string} key - Key in the dashboard data state.
+ * @returns {string} Loading, unavailable, or ready state.
+ */
 function sectionStatus(key) {
   if (state.busy && state.data[key] == null) return 'loading';
   return state.errors.has(key) || state.connection === 'offline' ? 'unavailable' : 'ready';
 }
 
+/**
+ * Show the percentage change from the previous period when a baseline exists.
+ * @param {string} id - CSS selector for the comparison caption.
+ * @param {number|undefined} current - Selected-period value.
+ * @param {number|undefined} previous - Comparison-period value.
+ * @param {number} days - Length of each comparison period.
+ * @param {string} fallback - Default caption while data is unavailable.
+ * @param {boolean} [estimated=false] - Whether to mark the change as an estimate.
+ */
 function showComparison(id, current, previous, days, fallback, estimated = false) {
   const caption = $(id);
   if (current == null || !previous) {
@@ -276,6 +352,7 @@ function showComparison(id, current, previous, days, fallback, estimated = false
   caption.className = change < 0 ? 'comparison negative' : change > 0 ? 'comparison' : '';
 }
 
+/** Update the status, metrics, alerts, map, and charts from dashboard state. */
 function render() {
   const { data, mode, selection, busy, lastRefresh, connection } = state;
   const status = $('#connection');
@@ -325,6 +402,12 @@ function render() {
   updateCharts(data.summary, sectionStatus('summary') === 'loading' ? 'Loading event records…' : 'Event records unavailable');
 }
 
+/**
+ * Load dashboard data for the current filters and render the results.
+ * @param {Object} [options] - Request behavior.
+ * @param {boolean} [options.replace=false] - Whether to cancel an in-flight refresh.
+ * @returns {Promise<void>} Resolves after successful sections or errors are rendered.
+ */
 async function refresh({ replace = false } = {}) {
   if (state.busy && !replace) return;
   requestController?.abort();
@@ -332,6 +415,7 @@ async function refresh({ replace = false } = {}) {
   const { signal } = requestController;
   const selection = { ...state.selection };
   const range = dateRange(selection);
+  // The active-alert trend ends today, even when the event filter selects past dates.
   const alertRange = dateRange({ days: range.days });
   const alertKey = [selection.hazard, selection.region, selection.alertLevel].join('/');
   const eventsKey = [alertKey, range.from, range.to].join('/');
@@ -340,6 +424,7 @@ async function refresh({ replace = false } = {}) {
     alertTrend: [alertKey, alertRange.from, alertRange.to].join('/'),
     hotspots: [selection.region, range.from, range.to].join('/'),
   };
+  // Retain the last successful data only when its filters still match.
   for (const [key, value] of Object.entries(newKeys)) {
     if (state.keys[key] !== value) delete state.data[key];
   }
@@ -348,6 +433,7 @@ async function refresh({ replace = false } = {}) {
   state.errors.clear();
 
   const rows = loadEvents(selection, range, signal);
+  // Global daily counts lack regional and aid-level detail.
   const summary = selection.region === 'world' && !selection.alertLevel
     ? loadDaily(selection, range, signal).catch(() => rows)
     : rows;
@@ -380,6 +466,7 @@ async function refresh({ replace = false } = {}) {
   render();
 }
 
+/** Update filter controls and start a refresh for the new selection. */
 function selectionChanged() {
   const { selection } = state;
   $('#edit-dates').hidden = !selection.custom;
@@ -400,6 +487,8 @@ $('#aid-level').addEventListener('change', event => {
   state.selection.alertLevel = event.target.value || null;
   selectionChanged();
 });
+
+/** Open the custom date dialog with the current range filled in. */
 function openDateRange() {
   const range = dateRange(state.selection);
   $('#date-error').textContent = '';

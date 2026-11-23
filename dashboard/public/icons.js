@@ -18,10 +18,16 @@ const shapes = {
   volcano: '<path d="m2 20 6.4-12h7.2L22 20H2Zm8-16-.7-1.7M14 4l.8-1.7M12 13v3m0 2h.01"/>',
 };
 
+/**
+ * Return the inline SVG for a named dashboard icon.
+ * @param {string} name - Icon name from the local shape catalog.
+ * @returns {string} SVG markup, using the dots icon as a fallback.
+ */
 export function icon(name) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes[name] || shapes.dots}</svg>`;
 }
 
+/** Populate elements marked with data-icon using the local icon catalog. */
 export function installIcons() {
   document.querySelectorAll('[data-icon]').forEach(node => {
     node.innerHTML = icon(node.dataset.icon);

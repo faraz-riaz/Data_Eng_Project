@@ -183,6 +183,7 @@ JOIN disaster_events e USING (event_id)
 WHERE w.forecast_time >= date_trunc('hour', now())
 ORDER BY w.event_id, w.retrieved_at DESC, w.forecast_time;
 
+-- A skipped poll still signals that the source schedule ran.
 CREATE VIEW analytics.source_freshness AS
 SELECT s.source, s.expected_minutes,
        (SELECT max(started_at) FROM ops.ingestion_runs r WHERE r.source = s.source AND r.status IN ('success', 'skipped')) AS last_success_at,

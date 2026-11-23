@@ -22,7 +22,7 @@ CHECKS = [
      False, lambda v: v == 0),
     ("events_missing_coordinates", "SELECT count(*) FROM disaster_events WHERE latitude IS NULL", False, lambda v: v == 0),
 ]
-# staged distinct records vs rows in the final table (some may be rejected by validation)
+# Compare cleaned table totals with distinct processed records. Validation can drop some records.
 for src, table, cond in [("usgs", "disaster_events", "source = 'usgs'"), ("gdacs", "disaster_events", "source = 'gdacs'"),
                          ("eonet", "disaster_events", "source = 'eonet'"), ("firms", "fire_detections", "TRUE")]:
     CHECKS.append((f"reconcile_{src}_pct", f"""SELECT round(100.0 * (SELECT count(*) FROM {table} WHERE {cond})
@@ -34,8 +34,16 @@ for src, table, cond in [("usgs", "disaster_events", "source = 'usgs'"), ("gdacs
 @dag(dag_id="daily_validation", schedule="0 3 * * *", start_date=datetime(2026, 11, 1), catchup=False,
      max_active_runs=1, default_args={"retries": 1, "retry_delay": timedelta(minutes=5)}, tags=["quality"], doc_md=__doc__)
 def daily_validation():
+    """Define the daily reconciliation and data quality tasks."""
+
     @task
     def replay_missing():
+        """Allow missing staging records to be republished on a future poll.
+
+        Returns:
+            The number of publish records removed from the deduplication table.
+        """
+        # Give the Kafka consumer time to stage each version before allowing a replay.
         rows = ingest.sql("""DELETE FROM ops.published_records p
             WHERE published_at < now() - interval '30 minutes'
               AND NOT EXISTS (SELECT 1 FROM staging.source_records s WHERE s.source = p.source
@@ -46,6 +54,11 @@ def daily_validation():
 
     @task
     def quality_checks():
+        """Run configured quality checks and save every result to PostgreSQL.
+
+        Raises:
+            ValueError: If any critical check fails.
+        """
         failed = []
         for name, query, critical, ok in CHECKS:
             value = float(ingest.sql(query)[0][0])

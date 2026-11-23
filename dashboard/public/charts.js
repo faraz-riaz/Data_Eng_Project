@@ -9,6 +9,11 @@ const chartColors = {
   other: '#99a8ba',
 };
 
+/**
+ * Fit a canvas to its CSS size and scale it for the display density.
+ * @param {HTMLCanvasElement} canvas - Canvas to size.
+ * @returns {Object|null} Drawing context and CSS dimensions, or null for a hidden canvas.
+ */
 function canvasFrame(canvas) {
   const { width, height } = canvas.getBoundingClientRect();
   if (!width || !height) return null;
@@ -20,6 +25,11 @@ function canvasFrame(canvas) {
   return { ctx, width, height };
 }
 
+/**
+ * Choose a positive integer interval for the count axis.
+ * @param {number} maximum - Largest value the axis needs to show.
+ * @returns {number} Spacing between axis ticks.
+ */
 function axisStep(maximum) {
   const target = maximum / 4;
   const size = 10 ** Math.floor(Math.log10(target));
@@ -28,6 +38,11 @@ function axisStep(maximum) {
   ) * size || 1);
 }
 
+/**
+ * Create a canvas path through a series of points.
+ * @param {CanvasRenderingContext2D} ctx - Drawing context.
+ * @param {Array} points - Pairs of horizontal and vertical coordinates.
+ */
 function plot(ctx, points) {
   ctx.beginPath();
   points.forEach(([x, y], index) => {
@@ -36,10 +51,18 @@ function plot(ctx, points) {
   });
 }
 
+/**
+ * Initialize the metric sparklines and observe size changes.
+ * @returns {function(Object): void} Function that updates all sparkline series.
+ */
 export function createSparklines() {
   const charts = document.querySelectorAll('.sparkline');
   let series = {};
 
+  /**
+   * Draw one metric sparkline from its assigned series.
+   * @param {HTMLCanvasElement} canvas - Metric canvas identifying the series.
+   */
   function draw(canvas) {
     const frame = canvasFrame(canvas);
     const values = series[canvas.dataset.series];
@@ -75,12 +98,20 @@ export function createSparklines() {
 
   const resize = new ResizeObserver(entries => entries.forEach(entry => draw(entry.target)));
   charts.forEach(canvas => resize.observe(canvas));
+  /**
+   * Replace the metric series and redraw the visible sparklines.
+   * @param {Object} data - Values keyed by metric name.
+   */
   return data => {
     series = data;
     charts.forEach(draw);
   };
 }
 
+/**
+ * Initialize chart controls and create a renderer for event summaries.
+ * @returns {function(Object, string): void} Function that updates both charts.
+ */
 export function createCharts() {
   const canvas = document.querySelector('#trend-chart');
   const tooltip = document.querySelector('#trend-tooltip');
@@ -93,6 +124,7 @@ export function createCharts() {
   let pointers = [];
   let selectedIndex = -1;
 
+  /** Draw the daily event trend and save point positions for chart interaction. */
   function drawTrend() {
     const frame = canvasFrame(canvas);
     if (!frame) return;
@@ -103,7 +135,17 @@ export function createCharts() {
     const ceiling = Math.max(4 * step, Math.ceil(scaleMax / step) * step);
     const small = width < 355;
     const layout = { left: scaleMax >= 1000 ? 41 : 34, right: width - 13, top: 12, bottom: height - 26 };
+    /**
+     * Convert a day index to a horizontal plot position.
+     * @param {number} index - Index in the daily series.
+     * @returns {number} Horizontal position in CSS pixels.
+     */
     const x = index => (layout.right - layout.left) * (values.length === 1 ? .5 : index / (values.length - 1)) + layout.left;
+    /**
+     * Convert an event count to a vertical plot position.
+     * @param {number} value - Daily event count.
+     * @returns {number} Vertical position in CSS pixels.
+     */
     const y = value => layout.bottom - (layout.bottom - layout.top) * value / ceiling;
 
     ctx.font = '700 10px Manrope, system-ui, sans-serif';
@@ -117,6 +159,7 @@ export function createCharts() {
       ctx.fillText(summary ? number.format(n) : '–', layout.left - 6, y(n));
     }
 
+    // Limit crowded date labels while keeping the first and last day visible.
     const sampleCount = Math.min(values.length, small ? 4 : values.length === 7 ? 7 : 6);
     const labels = new Set(Array.from({ length: sampleCount }, (_, index) =>
       Math.round(index * (values.length - 1) / Math.max(1, sampleCount - 1))));
@@ -156,6 +199,11 @@ export function createCharts() {
     }
   }
 
+  /**
+   * Highlight one trend point and update its tooltip.
+   * @param {number} index - Day index, or -1 to clear the selection.
+   * @param {boolean} [announce=false] - Whether to announce the value to assistive technology.
+   */
   function select(index, announce = false) {
     selectedIndex = index;
     drawTrend();
@@ -173,6 +221,7 @@ export function createCharts() {
     if (announce) selection.textContent = detail;
   }
 
+  // Snap the tooltip to the nearest day, even between plotted points.
   canvas.addEventListener('pointermove', event => {
     if (!pointers.length) return;
     const position = event.clientX - canvas.getBoundingClientRect().left;
@@ -195,6 +244,11 @@ export function createCharts() {
   document.fonts.ready.then(drawTrend);
 
   let lastMessage;
+  /**
+   * Render the event trend and hazard breakdown from the latest summary.
+   * @param {Object|null|undefined} snapshot - Summary data, if available.
+   * @param {string} message - Status text to show while data is unavailable.
+   */
   return function updateCharts(snapshot, message) {
     if (snapshot === summary && message === lastMessage) return;
     summary = snapshot;
