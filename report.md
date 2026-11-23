@@ -181,7 +181,7 @@ The API reads PostgreSQL through psycopg2 and returns JSON. List routes use `lim
 | Global Activity Map | The Events layer plots rows with valid coordinates on a Natural Earth base map. The Hotspots layer combines daily FIRMS grids across the selected dates and draws up to the 8,000 busiest occupied cells. It uses the square root of detection count for relative visual intensity and shows absolute count, confidence, and peak FRP on inspection. |
 | Event details and data sources | Clicking an event opens source details and up to six upcoming hourly forecasts when available. The sources bar shows the outcome or freshness of ingestion runs. Refresh runs once per minute in visible tabs and can also be triggered manually. |
 
-The browser uses independent requests so sections can recover after a transient error. Filter changes cancel older requests and discard results associated with the previous selection. The detail dialog can show event metadata even when forecast data is unavailable. [Dashboard code](dashboard/public/app.js) · [Charts](dashboard/public/charts.js) · [Map and heat layer](dashboard/public/map.js) · [Dashboard assets and licenses](dashboard/README.md)
+The browser uses independent requests so sections can recover after a transient error. Filter changes cancel older requests and discard results associated with the previous selection. The detail dialog can show event metadata even when forecast data is unavailable. [Dashboard code](dashboard/public/app.js) · [Charts](dashboard/public/charts.js) · [Map and heat layer](dashboard/public/map.js) · [Dashboard assets and licenses](README.md#dashboard-credits)
 
 ### 4.7 Data quality, traceability, and reproducibility
 
@@ -192,7 +192,7 @@ The browser uses independent requests so sections can recover after a transient 
 
 [Preflight results](API_PREFLIGHT.md) · [Validation code](dags/daily_validation.py) · [Team's implementation and test log](IMPLEMENTATION_STATUS.md)
 
-A fresh local run needs Docker, an environment file based on the provided template, and a NASA FIRMS MAP_KEY. Supply the required service credentials in `.env`. From the repository root, run the pipeline with Compose, then start the dashboard server in a separate terminal. The optional preflight uses Requests in the host Python environment. [Setup instructions](README.md) · [Environment template](.env.example) · [NASA FIRMS key registration](https://firms.modaps.eosdis.nasa.gov/api/map_key/) · [Dashboard startup](dashboard/README.md)
+A fresh local run needs Docker, an environment file based on the provided template, and a NASA FIRMS MAP_KEY. Supply the required service credentials in `.env`. From the repository root, run the pipeline with Compose, then start the dashboard server in a separate terminal. The optional preflight uses Requests in the host Python environment. [Pipeline and dashboard setup](README.md#run-locally) · [Environment template](.env.example) · [NASA FIRMS key registration](https://firms.modaps.eosdis.nasa.gov/api/map_key/)
 
 ```bash
 test -f .env || cp .env.example .env
@@ -212,7 +212,7 @@ python3 dashboard/server.py
 | Spark master | [127.0.0.1:8081](http://127.0.0.1:8081) |
 | MinIO console | [127.0.0.1:9001](http://127.0.0.1:9001) |
 
-For a controlled demonstration, verify source staging and the API health endpoint, then use Airflow's task graph and logs to show a run. `docker compose exec airflow airflow dags trigger <dag_id>` starts a manual run. Event ETL should populate eligible locations before manually triggering Open-Meteo. A subsequent Spark ETL run then consumes the forecast records. Use the existing named volumes to keep state between routine stops and starts. [Compose service and volume definitions](docker-compose.yml) · [Manual run instructions](README.md)
+For a controlled demonstration, verify source staging and the API health endpoint, then use Airflow's task graph and logs to show a run. `docker compose exec airflow airflow dags trigger <dag_id>` starts a manual run. Event ETL should populate eligible locations before manually triggering Open-Meteo. A subsequent Spark ETL run then consumes the forecast records. Use the existing named volumes to keep state between routine stops and starts. [Compose service and volume definitions](docker-compose.yml) · [Manual run instructions](README.md#check-rerun-or-stop)
 
 ## 5. Results and insights from the dashboard
 
@@ -333,4 +333,4 @@ The professor's six required report subjects map directly to Sections 1–6 abov
 | Meaningful dashboard tiles | Use the Event Trend and Events by Hazard figures with titles, dates, units, sources, denominators, and one interpretation each. The sections above provide observed numbers and captions. |
 | Reproducibility and clear reporting | Include a short setup recipe, the exact snapshot time, the main filters used, and the limits of the tests. Cite public feed documentation and the relevant files for implementation specifics. |
 
-**Repository references.** [Root README](README.md) · [Dashboard README](dashboard/README.md) · [SQL schema](sql/01_schema.sql) · [API preflight results](API_PREFLIGHT.md) · [Implementation verification](IMPLEMENTATION_STATUS.md) · [Earlier architecture proposal](Natural_Disaster_Pipeline_Architecture.pdf). Use the code and running results described in this reference for the implemented architecture and dashboard. The architecture PDF documents the initial design.
+**Repository references.** [Root README](README.md) · [SQL schema](sql/01_schema.sql) · [API preflight results](API_PREFLIGHT.md) · [Implementation verification](IMPLEMENTATION_STATUS.md) · [Earlier architecture proposal](Natural_Disaster_Pipeline_Architecture.pdf). Use the code and running results described in this reference for the implemented architecture and dashboard. The architecture PDF documents the initial design.
