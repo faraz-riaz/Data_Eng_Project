@@ -52,16 +52,12 @@ To stop locally, press **Ctrl+C** in the dashboard terminal, then run `docker co
 ## Architecture
 
 ```mermaid
-flowchart TD
-    Sources["USGS · GDACS · NASA FIRMS · NASA EONET · Open-Meteo"]
-    Sources --> Ingest["Python pollers and Airflow ingestion"]
-    Ingest --> Archive[("MinIO raw archive")]
-    Archive --> Kafka["Parse and publish changes to Kafka"]
-    Kafka --> Staging[("PostgreSQL staging via Python consumer")]
-    Staging --> Spark["Spark ETL scheduled by Airflow"]
-    Spark --> Clean[("PostgreSQL cleaned tables and analytics")]
-    Clean --> API["FastAPI REST API"]
-    API --> Dashboard["World in Motion dashboard"]
+flowchart LR
+    Collect["<b>Collect and archive</b><br/>5 public APIs<br/>Python and Airflow<br/>MinIO raw archive"]
+    Stage["<b>Stream and stage</b><br/>Kafka<br/>Python consumer<br/>PostgreSQL staging"]
+    Transform["<b>Transform</b><br/>Spark ETL<br/>PostgreSQL analytics"]
+    Serve["<b>Serve and display</b><br/>FastAPI<br/>Dashboard"]
+    Collect --> Stage --> Transform --> Serve
 ```
 
 Python polls USGS and GDACS continuously. Airflow schedules FIRMS, EONET, and Open-Meteo, which uses coordinates from cleaned events. MinIO retains the original responses. Kafka buffers new or revised records, and the consumer stores them in PostgreSQL staging. Spark standardizes timestamps and hazard types, validates data, and builds daily event counts and 0.5° fire grids. FastAPI serves PostgreSQL results to the dashboard. A daily Airflow workflow checks freshness, backlog, and reconciliation.
